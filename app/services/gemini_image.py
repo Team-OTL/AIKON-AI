@@ -1,0 +1,51 @@
+import mimetypes
+
+from google import genai
+from google.genai import types
+
+from app.core.config import settings
+
+_client: genai.Client | None = None
+
+
+def _get_client() -> genai.Client:
+    global _client
+    if _client is None:
+        _client = genai.Client(api_key=settings.gemini_api_key)
+    return _client
+
+
+def infer_image_mime_type(source_uri: str) -> str:
+    mime_type, _ = mimetypes.guess_type(source_uri)
+    if mime_type in {"image/jpeg", "image/png", "image/webp"}:
+        return mime_type
+    return "image/png"
+
+
+async def generate_avatar_image(source_bytes: bytes, prompt: str, mime_type: str) -> bytes:
+    response = await _get_client().aio.models.generate_content(
+        model=settings.gemini_image_model,
+        contents=[
+            types.Part.from_bytes(data=source_bytes, mime_type=mime_type),
+            types.Part.from_text(text=prompt),
+        ],
+        config=types.GenerateContentConfig(
+            response_modalities=["IMAGE"],
+        ),
+    )
+    if not response.candidates:
+        raise ValueError(
+            f"Gemini 응답에 후보(candidates)가 없습니다. promptFeedback={response.prompt_feedback}"
+        )
+    candidate = response.candidates[0]
+    if not candidate.content or not candidate.content.parts:
+        raise ValueError(
+            "Gemini 응답 후보에 콘텐츠 또는 파트가 없습니다. "
+            f"finishReason={candidate.finish_reason}, "
+            f"finishMessage={candidate.finish_message}, "
+            f"safetyRatings={candidate.safety_ratings}"
+        )
+    for part in candidate.content.parts:
+        if part.inline_data is not None and part.inline_data.data is not None:
+            return part.inline_data.data
+    raise ValueError("Gemini 응답에 이미지 데이터가 없습니다")
